@@ -10,6 +10,7 @@ Fidelity caveat (abcdl_to_mcap single-frame re-encode):
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 
@@ -35,36 +36,38 @@ def _decode_annexb(chunks: list[bytes], codec: str, out_w: int, out_h: int) -> n
 
     Scale each frame preserving aspect ratio, then pad to exactly out_w x out_h.
     """
-    with tempfile.NamedTemporaryFile(suffix=f".{codec}", delete=False) as raw:
-        raw_name = raw.name
-        raw.write(b"".join(chunks))
-        raw.flush()
+    fd, raw_name = tempfile.mkstemp(suffix=f".{codec}")
+    try:
+        with os.fdopen(fd, "wb") as raw:
+            raw.write(b"".join(chunks))
 
-    # scale preserving AR, then pad to exact size; force_original_aspect_ratio=decrease
-    # ensures the image fits within out_w x out_h before padding.
-    vf = (
-        f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=bicubic,"
-        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2"
-    )
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-i", raw_name,
-            "-vf", vf,
-            "-f", "rawvideo",
-            "-pix_fmt", "rgb24",
-            "-v", "error",
-            "pipe:1",
-        ],
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')[-500:]}"
+        # scale preserving AR, then pad to exact size; force_original_aspect_ratio=decrease
+        # ensures the image fits within out_w x out_h before padding.
+        vf = (
+            f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=bicubic,"
+            f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2"
         )
-    buf = np.frombuffer(proc.stdout, np.uint8)
-    # Exact frame count: integer division avoids residual byte issues.
-    n = buf.size // (out_h * out_w * 3)
-    return buf[: n * out_h * out_w * 3].reshape(n, out_h, out_w, 3)
+        proc = subprocess.run(
+            [
+                "ffmpeg", "-i", raw_name,
+                "-vf", vf,
+                "-f", "rawvideo",
+                "-pix_fmt", "rgb24",
+                "-v", "error",
+                "pipe:1",
+            ],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')[-500:]}"
+            )
+        buf = np.frombuffer(proc.stdout, np.uint8)
+        # Exact frame count: integer division avoids residual byte issues.
+        n = buf.size // (out_h * out_w * 3)
+        return buf[: n * out_h * out_w * 3].reshape(n, out_h, out_w, 3)
+    finally:
+        os.unlink(raw_name)
 
 
 def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
@@ -148,11 +151,14 @@ def abcdl_to_mcap(in_dir: str, out_mcap: str) -> None:
         frames_arr = np.asarray(c.frames, np.uint8)  # (T, H, W, 3)
         chunks: list[bytes] = []
         for fr in frames_arr:
-            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
-                tmp_name = tmp.name
-            encode_strict_h264(fr[None], tmp_name)
-            with open(tmp_name, "rb") as fh:
-                chunks.append(fh.read())
+            fd, tmp_name = tempfile.mkstemp(suffix=".mp4")
+            os.close(fd)
+            try:
+                encode_strict_h264(fr[None], tmp_name)
+                with open(tmp_name, "rb") as fh:
+                    chunks.append(fh.read())
+            finally:
+                os.unlink(tmp_name)
         # Mutate in-place: write_mcap's _encoded_frames checks isinstance(x, bytes).
         c.frames = chunks
         c.codec = "h264"
