@@ -11,6 +11,7 @@ dependencies = [
     "mcap-protobuf-support",
     "protobuf",
     "foxglove-schemas-protobuf",
+    "grpcio-tools",
 ]
 
 [project.optional-dependencies]
