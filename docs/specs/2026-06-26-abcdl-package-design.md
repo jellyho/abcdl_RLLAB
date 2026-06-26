@@ -231,6 +231,9 @@ standalone-testable with synthetic frames; YAM integration is a later step.
 --from mcap --to abcdl`, `abcdl push/pull …`.
 
 ## 7. Dependencies
+- **Python `>=3.10,<3.13`** — must run on 3.10/3.11/3.12 (openpi is 3.11; much of the
+  ecosystem is still 3.10). No newer-only syntax; `from __future__ import annotations`
+  everywhere; `typing.Optional`/`Union` at runtime.
 - Required: `numpy`, `torch`, `torchcodec`, `mcap`, `mcap-protobuf-support`, `protobuf`,
   `foxglove-schemas-protobuf`, `huggingface_hub`; system `ffmpeg`.
 - Optional extras: `[lerobot]` (LeRobot conversion/interop), `[s3]` (`s3fs`/`boto3`).

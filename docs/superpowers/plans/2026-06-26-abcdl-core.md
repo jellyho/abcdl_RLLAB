@@ -6,11 +6,11 @@
 
 **Architecture:** Every format has a reader (→ `Episode`) and a writer (← `Episode`); converters compose through the IR. The abcdl format uses a strict H.264 encoding (GOP 30, CFR, faststart, no B-frames) whose frame index is reconstructed analytically at load time via torchcodec `custom_frame_mappings`. MCAP read uses embedded protobuf schemas; MCAP write uses vendored protos + foxglove schemas.
 
-**Tech Stack:** Python 3.12, numpy, torch + torchcodec, ffmpeg (system), mcap + mcap-protobuf-support, protobuf, foxglove-schemas-protobuf, pytest.
+**Tech Stack:** Python 3.10–3.12, numpy, torch + torchcodec, ffmpeg (system), mcap + mcap-protobuf-support, protobuf, foxglove-schemas-protobuf, pytest.
 
 ## Global Constraints
 
-- Python `>=3.12` (matches ABC repo; `uv python pin 3.12`).
+- Python `>=3.10,<3.13` — code MUST run on **3.10, 3.11, and 3.12** (openpi is 3.11; much of the ecosystem is still 3.10). Avoid newer-only syntax: keep `from __future__ import annotations` in every module, use `typing.Optional`/`typing.Union` (not bare `X | Y` at runtime, e.g. not in `isinstance`/casts), no `match` statements, no `Self`/`tomllib`/`ExceptionGroup`-only features. CI should run the test suite on 3.10 and 3.12.
 - Package import name is `abcdl`; repo is `abcdl_RLLAB`.
 - abcdl video encoding is **exactly**: H.264, `keyint=30:min-keyint=30:scenecut=0`, `fps=30/1:timebase=1/15360:force-cfr=1`, `-bf 0`, `-pix_fmt yuv420p`, `-movflags +faststart`. Output frame count MUST equal `num_steps` (assert via ffprobe `nb_read_frames`).
 - abcdl fixed clock: `FPS=30`, `TICK_NS=33333333`, `TIMESCALE=15360`, `TICKS_PER_FRAME=512`.
@@ -95,7 +95,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'abcdl'`.
 name = "abcdl"
 version = "0.1.0"
 description = "A Behavior Cloning Dataloader — ABC MP4+binary and MCAP data layer"
-requires-python = ">=3.12"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "numpy",
     "torch",
