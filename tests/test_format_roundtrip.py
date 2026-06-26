@@ -40,3 +40,6 @@ def test_roundtrip_states_exact_and_frames_aligned(tmp_path):
     # frame count preserved per camera
     for name in ep.meta.cameras:
         assert len(back.cameras[name].frames) == ep.num_steps
+        fr = back.cameras[name].frames
+        assert fr.dtype == np.uint8
+        assert fr.shape == (ep.num_steps, 16, 16, 3)

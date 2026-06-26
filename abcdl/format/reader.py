@@ -33,23 +33,24 @@ def read_abcdl(in_dir: str) -> Episode:
     action_dim = int(meta["action_dim"])
     row = state_dim + action_dim
 
-    sa = np.fromfile(os.path.join(in_dir, "states_actions.bin"), dtype=np.float64).reshape(T, row)
+    sa = np.fromfile(os.path.join(in_dir, "states_actions.bin"), dtype="<f8").reshape(T, row)
     states, actions = sa[:, :state_dim], sa[:, state_dim:]
 
     stacked = _decode_all_frames(os.path.join(in_dir, "combined_camera-images-rgb.mp4"), T)
     stacked = np.transpose(stacked, (0, 2, 3, 1))  # (T, Hstack, W, C)
     names = list(meta["cameras"])
     h = stacked.shape[1] // len(names)
-    cams = {}
-    for i, name in enumerate(names):
-        frames = stacked[:, i * h:(i + 1) * h, :, :]
-        w = frames.shape[2]
-        cams[name] = CameraStream(frames=frames, timestamps=np.arange(T, dtype=np.int64),
-                                  width=w, height=h, codec="h264")
 
     tick_ns = int(meta.get("tick_ns", TICK_NS))
     t0 = int(meta.get("t0_ns", 0))
     ts = t0 + tick_ns * np.arange(T, dtype=np.int64)
+
+    cams = {}
+    for i, name in enumerate(names):
+        frames = stacked[:, i * h:(i + 1) * h, :, :]
+        w = frames.shape[2]
+        cams[name] = CameraStream(frames=frames, timestamps=ts,
+                                  width=w, height=h, codec="h264")
     em = EpisodeMeta(
         task=meta["task_name"], fps=1e9 / tick_ns, cameras=names,
         camera_resolutions={k: tuple(v) for k, v in meta["camera_resolutions"].items()},

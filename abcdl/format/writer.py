@@ -19,7 +19,7 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
 
     sa = np.concatenate([np.asarray(episode.states, np.float64),
                          np.asarray(episode.actions, np.float64)], axis=1)
-    sa.tofile(os.path.join(out_dir, "states_actions.bin"))
+    sa.astype("<f8").tofile(os.path.join(out_dir, "states_actions.bin"))
 
     stacks = []
     h = w = None
