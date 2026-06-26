@@ -134,14 +134,29 @@ def write_mcap(episode: Episode, path: str, layout: StateLayout = StateLayout.YA
         )
 
 
+def encode_frame_to_annexb(frame_hwc) -> bytes:
+    """Encode one (H,W,3) uint8 RGB frame to an H.264 byte blob."""
+    import os
+    import tempfile
+    import numpy as np
+    from abcdl.format.encode import encode_strict_h264
+
+    fd, tmp = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    try:
+        encode_strict_h264(np.asarray(frame_hwc, np.uint8)[None], tmp)
+        with open(tmp, "rb") as fh:
+            return fh.read()
+    finally:
+        os.unlink(tmp)
+
+
 def _encoded_frames(cam):
     """Return (list[bytes] Annex-B frames, timestamps np.int64).
 
     If frames are already bytes/bytearray, pass them through directly.
-    Encoding decoded (ndarray) frames is deferred to Plan 2.
+    Decoded (ndarray) frames are encoded per-frame via encode_frame_to_annexb.
     """
     if len(cam.frames) and isinstance(cam.frames[0], (bytes, bytearray)):
         return [bytes(x) for x in cam.frames], np.asarray(cam.timestamps, np.int64)
-    raise NotImplementedError(
-        "re-encoding decoded frames to per-frame Annex-B is added in Plan 2"
-    )
+    return [encode_frame_to_annexb(fr) for fr in cam.frames], np.asarray(cam.timestamps, np.int64)
