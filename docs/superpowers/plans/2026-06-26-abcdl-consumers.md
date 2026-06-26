@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the consumer layer on top of the abcdl core (Plan 1): a LeRobot-compatible loader, LeRobot↔abcdl conversion, cloud/HF publishing & streaming, an incremental EpisodeWriter (for live YAM recording), and a CLI.
+**Goal:** Build the consumer layer on top of the abcdl core (Plan 1): a LeRobot-compatible loader, LeRobot↔abcdl conversion, HF publishing, and an incremental EpisodeWriter (for live YAM recording). **No CLI** (per user) — HF use is LeRobot-style (`push_to_hub` / `AbcdlDataset(repo_id=...)` auto-load).
 
-**Architecture:** Everything builds on the Plan 1 `Episode` IR and `format`/`mcap` readers/writers. The loader presents a LeRobotDataset-shaped surface so openpi can swap in. HF uses format=branch / version=tag. Backends abstract local/HTTP/S3 file access for streaming.
+**Architecture:** Everything builds on the Plan 1 `Episode` IR and `format`/`mcap` readers/writers. The loader presents a LeRobotDataset-shaped surface so openpi can swap in. HF uses format=branch / version=tag. Backends abstract local/HTTP file access for streaming (no S3).
 
 **Tech Stack:** Python 3.10–3.12, numpy, torch, torchcodec, ffmpeg, mcap stack (Plan 1), plus huggingface_hub, fsspec; optional extra: lerobot (convert + loader feature parity). **S3 is out of scope** (per user) — backends cover local + HTTP only.
 
@@ -31,12 +31,12 @@ abcdl/
   dataset.py             # AbcdlDataset (LeRobot-compatible torch Dataset) + MixtureDataset
   convert/lerobot.py     # lerobot_to_abcdl / abcdl_to_lerobot (optional lerobot)
   hf.py                  # push / pull / list_versions  (format=branch, version=tag)
-  cli.py                 # `abcdl {inspect|convert|push|pull}`
+  dataset.py             # MODIFY (Task 5): repo_id auto-load + push_to_hub (LeRobot-style)
   mcap/writer.py         # MODIFY: implement decoded-frame -> Annex-B encode (remove NotImplementedError)
 tests/
   conftest.py            # MODIFY: add tmp_abcdl_episode fixture
-  test_backends.py test_writer.py test_dataset.py test_convert_lerobot.py test_hf.py test_cli.py
-pyproject.toml           # MODIFY: add huggingface_hub, fsspec deps; s3 extra (s3fs)
+  test_backends.py test_writer.py test_dataset.py test_convert_lerobot.py test_hf.py test_dataset_hub.py
+pyproject.toml           # MODIFY: add huggingface_hub, fsspec deps
 ```
 
 ---
@@ -723,19 +723,25 @@ git commit -m "feat: LeRobot <-> abcdl conversion"
 
 ---
 
-### Task 5: HuggingFace push / pull / list_versions
+### Task 5: HuggingFace integration — LeRobot-style push_to_hub + repo_id auto-load
 
 **Files:**
 - Create: `abcdl/hf.py`
-- Test: `tests/test_hf.py`
+- Modify: `abcdl/dataset.py` (add repo_id auto-load + `push_to_hub` so usage mirrors LeRobot)
+- Test: `tests/test_hf.py`, `tests/test_dataset_hub.py`
+
+**Goal (per user):** no CLI. Make it feel like LeRobot — `AbcdlDataset("jellyho/yam_pick")` loads directly (auto-downloads from the Hub), and `ds.push_to_hub("jellyho/yam_pick", "v1")` uploads. The format=branch / version=tag mechanism stays underneath.
 
 **Interfaces:**
 - Consumes: `huggingface_hub` (lazy import).
-- Produces:
+- Produces in `abcdl/hf.py`:
   - `push(repo_id, local_dir, fmt, version, message=None, token=None) -> str` — ensure repo exists (`create_repo(..., repo_type="dataset", exist_ok=True)`), create/use branch `fmt` (`create_branch(..., branch=fmt, exist_ok=True)`), `upload_folder(folder_path=local_dir, repo_id, repo_type="dataset", revision=fmt, commit_message=...)`, then tag `version` on that revision (`create_tag(repo_id, tag=version, revision=fmt, repo_type="dataset")`). Return the revision used.
   - `pull(repo_id, fmt, version="latest", dest=None, token=None) -> str` — resolve revision (the tag `version`, else branch `fmt`), `snapshot_download(repo_id, repo_type="dataset", revision=..., local_dir=dest)`; return the local dir.
   - `list_versions(repo_id, fmt=None, token=None) -> dict` — `list_repo_refs(repo_id, repo_type="dataset")`; return `{"branches":[...], "tags":[...]}` (filtered to `fmt` branch if given).
-- Tests do NOT hit the network: monkeypatch the `huggingface_hub` functions and assert `push`/`pull`/`list_versions` call them with the right `repo_type`/`revision`/`branch`/`tag` arguments.
+- Produces in `abcdl/dataset.py` (LeRobot-style ergonomics on `AbcdlDataset`):
+  - The first positional arg now means **root-or-repo_id**: if it is an existing local directory, use it as the root (existing behavior); otherwise if it matches `owner/name` (a `/`, not an existing path), treat it as a Hub `repo_id` and **auto-pull** via `hf.pull(repo_id, fmt, version)` into a cache dir, then load. New kwargs: `fmt="abcdl"`, `version="latest"`, `revision_root=None` (download dir; default `~/.cache/abcdl/<owner>__<name>/<version>`). A `from_hub(repo_id, fmt="abcdl", version="latest", root=None)` classmethod does the same explicitly.
+  - `AbcdlDataset.push_to_hub(repo_id, version, fmt="abcdl", message=None, token=None) -> str` — uploads `self.root` via `hf.push(...)`. (Mirrors `LeRobotDataset.push_to_hub`.)
+- Tests do NOT hit the network: monkeypatch `hf._hub` (for hf.py) and monkeypatch `abcdl.dataset.hf.pull`/`hf.push` (for the dataset wiring) and assert the right `repo_type`/`revision`/`branch`/`tag`/`fmt`/`version` flow.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -840,144 +846,85 @@ git add abcdl/hf.py tests/test_hf.py
 git commit -m "feat: HuggingFace push/pull/list_versions (format=branch, version=tag)"
 ```
 
----
+- [ ] **Step 6: Write the failing test for the LeRobot-style dataset wiring**
 
-### Task 6: CLI
-
-**Files:**
-- Create: `abcdl/cli.py`
-- Modify: `pyproject.toml` (add `[project.scripts] abcdl = "abcdl.cli:main"`)
-- Test: `tests/test_cli.py`
-
-**Interfaces:**
-- Produces: `main(argv=None)` (argparse) with subcommands:
-  - `inspect <path>` — abcdl dir or mcap file → print episode summary (num_steps, cameras, state/action dims, task).
-  - `convert <src> <dst> --from {mcap,abcdl,lerobot} --to {mcap,abcdl,lerobot}` — dispatch to the right converter.
-  - `push <repo_id> <local_dir> --format {abcdl,mcap} --version vN` / `pull <repo_id> --format ... --version ... --dest ...`.
-
-- [ ] **Step 1: Write the failing test**
-
-`tests/test_cli.py`:
+`tests/test_dataset_hub.py`:
 ```python
-from abcdl.cli import main
+import abcdl.dataset as dsmod
+from abcdl.dataset import AbcdlDataset
 
 
-def test_inspect_abcdl(capsys, tmp_abcdl_episode):
-    rc = main(["inspect", tmp_abcdl_episode])
-    out = capsys.readouterr().out
-    assert rc == 0
-    assert "num_steps" in out and "6" in out
-    assert "top" in out
+def test_repo_id_autopull_then_load(monkeypatch, tmp_abcdl_episode, tmp_path):
+    # a repo_id (owner/name, not an existing path) triggers hf.pull, whose returned
+    # dir is then loaded as a normal abcdl root. Point pull at a real local episode root.
+    import shutil
+    root = tmp_path / "pulled"; root.mkdir()
+    shutil.copytree(tmp_abcdl_episode, root / "episode_0000")
+    seen = {}
+    monkeypatch.setattr(dsmod.hf, "pull",
+                        lambda **k: seen.update(k) or str(root))
+    ds = AbcdlDataset("jellyho/yam_pick", version="v1")
+    assert seen["repo_id"] == "jellyho/yam_pick"
+    assert seen["fmt"] == "abcdl" and seen["version"] == "v1"
+    assert ds.num_episodes == 1 and len(ds) == 6
 
 
-def test_convert_dispatch(monkeypatch, tmp_path):
-    called = {}
-    import abcdl.cli as cli
-    monkeypatch.setattr(cli, "mcap_to_abcdl", lambda s, d: called.update(fn="m2a", s=s, d=d))
-    rc = main(["convert", "a.mcap", str(tmp_path / "out"), "--from", "mcap", "--to", "abcdl"])
-    assert rc == 0 and called["fn"] == "m2a"
+def test_push_to_hub_calls_hf_push(monkeypatch, tmp_abcdl_episode):
+    seen = {}
+    monkeypatch.setattr(dsmod.hf, "push", lambda **k: seen.update(k) or k["fmt"])
+    ds = AbcdlDataset(tmp_abcdl_episode)  # existing local dir → root
+    out = ds.push_to_hub("jellyho/yam_pick", "v2", fmt="abcdl")
+    assert seen["repo_id"] == "jellyho/yam_pick"
+    assert seen["fmt"] == "abcdl" and seen["version"] == "v2"
+    assert seen["local_dir"] == ds.root
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 7: Run test to verify it fails**
 
-Run: `PYTHONPATH= python -m pytest tests/test_cli.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'abcdl.cli'`.
+Run: `PYTHONPATH= python -m pytest tests/test_dataset_hub.py -v`
+Expected: FAIL — `AbcdlDataset` has no `repo_id` handling / no `push_to_hub` (AttributeError / wrong behavior).
 
-- [ ] **Step 3: Write minimal implementation**
+- [ ] **Step 8: Wire HF into `abcdl/dataset.py`**
 
-`abcdl/cli.py`:
+At the top of `abcdl/dataset.py`, add `from abcdl import hf` (module import so tests can monkeypatch `dsmod.hf.pull`/`push`). Then:
+- In `AbcdlDataset.__init__`, change the first positional `root` handling: if `root` is NOT an existing directory AND looks like a Hub repo id (`"/" in root` and not `os.path.isdir(root)`), resolve it from the Hub:
 ```python
-"""Command-line interface: inspect / convert / push / pull."""
-
-from __future__ import annotations
-
-import argparse
-import json
-import os
-from typing import Optional
-
-from abcdl.convert.mcap_abcdl import abcdl_to_mcap, mcap_to_abcdl
-
-
-def _summary(path: str) -> dict:
-    if os.path.isdir(path):
-        from abcdl.format.reader import read_abcdl
-        ep = read_abcdl(path)
-    else:
-        from abcdl.mcap.reader import read_mcap
-        ep = read_mcap(path)
-    return {"num_steps": ep.num_steps, "cameras": list(ep.meta.cameras),
-            "state_dim": int(ep.states.shape[1]), "action_dim": int(ep.actions.shape[1]),
-            "task": ep.meta.task}
-
-
-def main(argv: Optional[list] = None) -> int:
-    p = argparse.ArgumentParser(prog="abcdl")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    pi = sub.add_parser("inspect"); pi.add_argument("path")
-    pc = sub.add_parser("convert")
-    pc.add_argument("src"); pc.add_argument("dst")
-    pc.add_argument("--from", dest="src_fmt", required=True, choices=["mcap", "abcdl", "lerobot"])
-    pc.add_argument("--to", dest="dst_fmt", required=True, choices=["mcap", "abcdl", "lerobot"])
-    pp = sub.add_parser("push")
-    pp.add_argument("repo_id"); pp.add_argument("local_dir")
-    pp.add_argument("--format", required=True, choices=["abcdl", "mcap"]); pp.add_argument("--version", required=True)
-    pl = sub.add_parser("pull")
-    pl.add_argument("repo_id"); pl.add_argument("--format", required=True, choices=["abcdl", "mcap"])
-    pl.add_argument("--version", default="latest"); pl.add_argument("--dest", default=None)
-
-    args = p.parse_args(argv)
-    if args.cmd == "inspect":
-        print(json.dumps(_summary(args.path), indent=2)); return 0
-    if args.cmd == "convert":
-        pair = (args.src_fmt, args.dst_fmt)
-        if pair == ("mcap", "abcdl"):
-            mcap_to_abcdl(args.src, args.dst)
-        elif pair == ("abcdl", "mcap"):
-            abcdl_to_mcap(args.src, args.dst)
-        elif "lerobot" in pair:
-            from abcdl.convert.lerobot import abcdl_to_lerobot, lerobot_to_abcdl
-            if pair == ("abcdl", "lerobot"):
-                abcdl_to_lerobot(args.src, args.dst)
-            elif pair == ("lerobot", "abcdl"):
-                lerobot_to_abcdl(args.src, args.dst)
-            else:
-                raise SystemExit(f"unsupported conversion {pair}")
-        else:
-            raise SystemExit(f"unsupported conversion {pair}")
-        return 0
-    if args.cmd == "push":
-        from abcdl.hf import push
-        print(push(args.repo_id, args.local_dir, fmt=args.format, version=args.version)); return 0
-    if args.cmd == "pull":
-        from abcdl.hf import pull
-        print(pull(args.repo_id, fmt=args.format, version=args.version, dest=args.dest)); return 0
-    return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        if not os.path.isdir(root) and "/" in root:
+            owner_name = root.replace("/", "__")
+            dest = revision_root or os.path.join(
+                os.path.expanduser("~"), ".cache", "abcdl", owner_name, version)
+            os.makedirs(dest, exist_ok=True)
+            root = hf.pull(repo_id=root, fmt=fmt, version=version, dest=dest)
+        self.root = root
 ```
-Add to `pyproject.toml`:
-```toml
-[project.scripts]
-abcdl = "abcdl.cli:main"
+  Add the new kwargs to `__init__`: `fmt: str = "abcdl"`, `version: str = "latest"`, `revision_root: Optional[str] = None` (keep existing `delta_timestamps`, `camera_keys`, `cache_episodes`). Record `self.repo_id = root if "/" in <original> ... ` is optional; at minimum keep `self.root` pointing at the loaded dir.
+- Add a classmethod:
+```python
+    @classmethod
+    def from_hub(cls, repo_id, fmt="abcdl", version="latest", root=None, **kw):
+        return cls(repo_id, fmt=fmt, version=version, revision_root=root, **kw)
 ```
+- Add the upload method:
+```python
+    def push_to_hub(self, repo_id: str, version: str, fmt: str = "abcdl",
+                    message: Optional[str] = None, token: Optional[str] = None) -> str:
+        return hf.push(repo_id=repo_id, local_dir=self.root, fmt=fmt, version=version,
+                       message=message, token=token)
+```
+Keep all existing dataset behavior intact (a plain local `root` path must still work exactly as before — the Hub path only triggers for `owner/name` strings that are not existing dirs).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 9: Run tests + commit**
 
-Run: `PYTHONPATH= python -m pytest tests/test_cli.py -v`
-Expected: PASS (2 tests).
-
-- [ ] **Step 5: Commit**
+Run: `PYTHONPATH= python -m pytest tests/test_dataset_hub.py tests/test_dataset.py -v` then `PYTHONPATH= python -m pytest tests/ -q`
+Expected: PASS (new hub-wiring tests + existing dataset tests + full suite).
 
 ```bash
-git add abcdl/cli.py pyproject.toml tests/test_cli.py
-git commit -m "feat: CLI (inspect/convert/push/pull)"
+git add abcdl/dataset.py tests/test_dataset_hub.py
+git commit -m "feat: LeRobot-style repo_id auto-load + push_to_hub on AbcdlDataset"
 ```
 
 ---
+
 
 ## Self-Review
 
@@ -986,9 +933,9 @@ git commit -m "feat: CLI (inspect/convert/push/pull)"
 - §6.4 `hf.py` (format=branch/version=tag) + `backends.py` (local/HTTP; S3 dropped per user) → Tasks 1, 5. ✓
 - §6.5 `writer.py` EpisodeWriter + decoded-frame MCAP encode (resolves Plan 1 `NotImplementedError`) → Task 2. ✓
 - §6 `convert/lerobot.py` → Task 4. ✓
-- §6.6 `cli.py` → Task 6. ✓
+- §6.6 `cli.py` → **dropped per user**; replaced by LeRobot-style ergonomics (`push_to_hub` + `AbcdlDataset(repo_id=...)` auto-load) in Task 5. ✓
 - Optional-dep laziness (lerobot/hf) → enforced in Tasks 4/5 (lazy import + clear ImportError). ✓
 
 **Placeholder scan:** Tasks 4 and 5 carry explicit "API VERIFICATION REQUIRED" notes because they bind to third-party APIs (lerobot 0.4.4, huggingface_hub 0.35.x); the sketches are starting points and the implementer must confirm the real signatures (the same discipline used in Plan 1 for torchcodec/protoc/mcap). This is intentional, not a placeholder for missing logic.
 
-**Type consistency:** `Episode`/`CameraStream`/`EpisodeMeta` reused from Plan 1; loader returns `observation.state`/`action`/`observation.images.<cam>`/`task` consistently; hf `push`/`pull` use `fmt`/`version` consistently; CLI dispatches to the exact converter names (`mcap_to_abcdl`, `abcdl_to_mcap`, `abcdl_to_lerobot`, `lerobot_to_abcdl`, `push`, `pull`).
+**Type consistency:** `Episode`/`CameraStream`/`EpisodeMeta` reused from Plan 1; loader returns `observation.state`/`action`/`observation.images.<cam>`/`task` consistently; `hf.push`/`pull` use `fmt`/`version` consistently; `AbcdlDataset(repo_id=...)` calls `hf.pull` and `AbcdlDataset.push_to_hub` calls `hf.push` with matching `repo_id`/`fmt`/`version` kwargs.
