@@ -1,0 +1,48 @@
+import shutil
+
+import numpy as np
+import pytest
+import torch
+
+from abcdl.dataset import AbcdlDataset
+
+pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+
+
+def _make_root(tmp_path, tmp_abcdl_episode):
+    # two episodes under a root
+    root = tmp_path / "ds"
+    root.mkdir()
+    for k in range(2):
+        shutil.copytree(tmp_abcdl_episode, root / f"episode_{k:04d}")
+    return str(root)
+
+
+def test_dataset_len_and_item(tmp_path, tmp_abcdl_episode):
+    root = _make_root(tmp_path, tmp_abcdl_episode)
+    ds = AbcdlDataset(root)
+    assert ds.num_episodes == 2
+    assert ds.num_frames == len(ds) == 12  # 6 frames x 2
+    item = ds[0]
+    assert item["observation.state"].shape == (14,)
+    assert item["action"].shape == (14,)
+    assert item["observation.images.top"].shape[0] == 3  # CHW
+    assert 0.0 <= float(item["observation.images.top"].max()) <= 1.0
+    assert item["task"] == "demo task"
+    assert int(item["episode_index"]) in (0, 1)
+
+
+def test_dataset_action_chunk(tmp_path, tmp_abcdl_episode):
+    root = _make_root(tmp_path, tmp_abcdl_episode)
+    ds = AbcdlDataset(root, delta_timestamps={"action": [0.0, 1 / 30, 2 / 30]})
+    item = ds[0]
+    assert item["action"].shape == (3, 14)
+
+
+def test_meta_features(tmp_path, tmp_abcdl_episode):
+    root = _make_root(tmp_path, tmp_abcdl_episode)
+    ds = AbcdlDataset(root)
+    assert ds.meta.fps == 30.0
+    assert set(ds.meta.camera_keys) == {"top", "left_wrist"}
+    assert "observation.state" in ds.meta.features
+    assert ds.meta.features["observation.state"]["shape"] == (14,)

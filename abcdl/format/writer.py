@@ -35,13 +35,18 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
     combined = np.concatenate(stacks, axis=1)  # vstack along height
     encode_strict_h264(combined, os.path.join(out_dir, "combined_camera-images-rgb.mp4"))
 
+    tick_ns = int(episode.meta.tick_ns or TICK_NS)
     meta = {
         "task_name": episode.meta.task,
         "cameras": list(episode.meta.cameras),
         "camera_resolutions": {k: list(v) for k, v in episode.meta.camera_resolutions.items()},
         "alignment": episode.meta.alignment,
         "t0_ns": int(episode.meta.t0_ns or 0),
-        "tick_ns": int(episode.meta.tick_ns or TICK_NS),
+        "tick_ns": tick_ns,
+        # Store fps explicitly so readers can recover the exact value without
+        # floating-point drift from 1e9/tick_ns (e.g. 30 Hz stored as tick_ns
+        # =33_333_333 gives 30.0000003, not 30.0).
+        "fps": float(episode.meta.fps) if episode.meta.fps is not None else 1e9 / tick_ns,
         "num_steps": T,
         "state_dim": int(episode.states.shape[1]),
         "action_dim": int(episode.actions.shape[1]),
