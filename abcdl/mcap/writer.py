@@ -119,6 +119,11 @@ def write_mcap(episode: Episode, path: str, layout: StateLayout = StateLayout.YA
                 )
 
         # --- episode-metadata record (via underlying mcap.writer.Writer) ---
+        if not hasattr(getattr(w, "_writer", None), "add_metadata"):
+            raise RuntimeError(
+                "mcap_protobuf.Writer internal API changed: no `_writer.add_metadata`. "
+                "Pin mcap-protobuf-support<0.6 or update abcdl.mcap.writer."
+            )
         w._writer.add_metadata(
             name="episode-metadata",
             data={
