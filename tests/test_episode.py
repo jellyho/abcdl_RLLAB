@@ -29,3 +29,10 @@ def test_episode_validate_rejects_length_mismatch():
     ep.actions = np.zeros((4, 14))
     with pytest.raises(ValueError):
         ep.validate()
+
+
+def test_episode_validate_rejects_missing_camera():
+    ep = _toy_episode(5)
+    ep.meta.cameras.append("missing_camera")
+    with pytest.raises(ValueError):
+        ep.validate()

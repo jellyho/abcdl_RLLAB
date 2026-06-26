@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Union
 
 import numpy as np
@@ -46,9 +46,9 @@ class CameraStream:
 class EpisodeMeta:
     task: str
     fps: float
-    cameras: list
-    camera_resolutions: dict
-    camera_codecs: dict
+    cameras: list[str]
+    camera_resolutions: dict[str, tuple]
+    camera_codecs: dict[str, str]
     operator_id: Optional[str] = None
     alignment: str = "native"
     t0_ns: Optional[int] = None
@@ -61,7 +61,7 @@ class Episode:
     states: np.ndarray                # (T, state_dim) float64
     actions: np.ndarray               # (T, action_dim) float64
     timestamps: np.ndarray            # (T,) int64 ns
-    cameras: dict                     # {name: CameraStream}
+    cameras: dict[str, "CameraStream"]  # {name: CameraStream}
     meta: EpisodeMeta
     ee_poses: Optional[dict] = None   # {side: (T,4,4)}
     extras: Optional[dict] = None     # {side: {"velocity":..., "torque":...}}
