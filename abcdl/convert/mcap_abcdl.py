@@ -1,0 +1,159 @@
+"""Convert between the ABC-130k MCAP format and the abcdl MP4+binary format.
+
+Fidelity caveat (abcdl_to_mcap single-frame re-encode):
+  Each decoded frame is re-encoded by encode_strict_h264 into a tiny MP4 container
+  file, whose raw bytes are then used as the "chunk" written to MCAP. This yields an
+  MP4-container blob, not a pure Annex-B elementary stream. The abcdl reader/writer
+  handle this correctly for round-trip purposes, but the resulting MCAP is NOT
+  byte-identical to the original ABC-130k per-frame Annex-B representation.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import tempfile
+
+import numpy as np
+
+from abcdl.constants import TICK_NS
+from abcdl.episode import CameraStream, Episode, EpisodeMeta
+from abcdl.format.reader import read_abcdl
+from abcdl.format.writer import write_abcdl
+from abcdl.mcap.reader import read_mcap
+from abcdl.mcap.writer import write_mcap
+
+OUT_W = OUT_H = 224
+
+
+def _floor_idx(src_ts: np.ndarray, tgt_ts: np.ndarray) -> np.ndarray:
+    """For each element of tgt_ts, return the index of the latest src_ts at-or-before it."""
+    return np.clip(np.searchsorted(src_ts, tgt_ts, side="right") - 1, 0, len(src_ts) - 1)
+
+
+def _decode_annexb(chunks: list[bytes], codec: str, out_w: int, out_h: int) -> np.ndarray:
+    """Decode a list of Annex-B frame chunks to (N, out_h, out_w, 3) uint8 via ffmpeg.
+
+    Scale each frame preserving aspect ratio, then pad to exactly out_w x out_h.
+    """
+    with tempfile.NamedTemporaryFile(suffix=f".{codec}", delete=False) as raw:
+        raw_name = raw.name
+        raw.write(b"".join(chunks))
+        raw.flush()
+
+    # scale preserving AR, then pad to exact size; force_original_aspect_ratio=decrease
+    # ensures the image fits within out_w x out_h before padding.
+    vf = (
+        f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:flags=bicubic,"
+        f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2"
+    )
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-i", raw_name,
+            "-vf", vf,
+            "-f", "rawvideo",
+            "-pix_fmt", "rgb24",
+            "-v", "error",
+            "pipe:1",
+        ],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')[-500:]}"
+        )
+    buf = np.frombuffer(proc.stdout, np.uint8)
+    # Exact frame count: integer division avoids residual byte issues.
+    n = buf.size // (out_h * out_w * 3)
+    return buf[: n * out_h * out_w * 3].reshape(n, out_h, out_w, 3)
+
+
+def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
+    """Read *src_mcap* (ABC-130k), resample to a fixed 30 Hz causal clock, write abcdl.
+
+    Resampling strategy:
+      - ``ticks = np.arange(t0 + TICK_NS, t_end + 1, TICK_NS)``  (causal: first tick
+        is one period after the first state sample so all ticks have a valid floor sample).
+      - States and actions are floor-sampled (latest sample at-or-before each tick).
+      - Each camera's Annex-B stream is decoded via ffmpeg, scaled/padded to 224x224,
+        then floor-sampled onto the same tick grid.
+      - The resulting Episode has alignment == "fixed_clock_30hz_causal" and fps == 30.
+    """
+    ep = read_mcap(src_mcap)
+    t0 = int(ep.timestamps[0])
+    t_end = int(ep.timestamps[-1])
+    # Causal fixed-clock grid: ticks start one period after t0 so every tick has
+    # a valid floor sample in the source stream.
+    ticks = np.arange(t0 + TICK_NS, t_end + 1, TICK_NS, dtype=np.int64)
+    T = len(ticks)
+
+    # --- resample states / actions ---
+    si = _floor_idx(ep.timestamps, ticks)
+    states = ep.states[si]
+    actions = ep.actions[si]
+
+    # --- decode and resample cameras ---
+    cams: dict[str, CameraStream] = {}
+    res: dict[str, tuple[int, int]] = {}
+    codecs: dict[str, str] = {}
+    for name in ep.meta.cameras:
+        c = ep.cameras[name]
+        decoded = _decode_annexb(c.frames, c.codec, OUT_W, OUT_H)  # (Nframes, H, W, 3)
+        nf = decoded.shape[0]
+        cam_ts = c.timestamps if nf == len(c.timestamps) else np.linspace(
+            c.timestamps[0], c.timestamps[-1], nf, dtype=np.int64
+        )
+        cam_ts = np.asarray(cam_ts, np.int64)
+        fi = _floor_idx(cam_ts, ticks)
+        sel = decoded[fi]  # (T, OUT_H, OUT_W, 3)
+        cams[name] = CameraStream(
+            frames=sel, timestamps=ticks.copy(), width=OUT_W, height=OUT_H, codec="raw"
+        )
+        res[name] = (OUT_W, OUT_H)
+        codecs[name] = "h264"
+
+    meta = EpisodeMeta(
+        task=ep.meta.task,
+        fps=30.0,
+        cameras=list(ep.meta.cameras),
+        camera_resolutions=res,
+        camera_codecs=codecs,
+        operator_id=ep.meta.operator_id,
+        alignment="fixed_clock_30hz_causal",
+        t0_ns=t0,
+        tick_ns=TICK_NS,
+        session_id=ep.meta.session_id,
+    )
+    out_ep = Episode(
+        states=states,
+        actions=actions,
+        timestamps=ticks,
+        cameras=cams,
+        meta=meta,
+    )
+    write_abcdl(out_ep, out_dir)
+
+
+def abcdl_to_mcap(in_dir: str, out_mcap: str) -> None:
+    """Read *in_dir* (abcdl), re-encode frames as per-frame H.264 chunks, write MCAP.
+
+    Each decoded frame is encoded to a single-frame MP4 container via
+    ``encode_strict_h264``. The raw file bytes are used as the chunk payload.
+    See module-level docstring for the fidelity caveat.
+    """
+    from abcdl.format.encode import encode_strict_h264  # reuse strict encoder per-frame
+
+    ep = read_abcdl(in_dir)
+    for name in ep.meta.cameras:
+        c = ep.cameras[name]
+        frames_arr = np.asarray(c.frames, np.uint8)  # (T, H, W, 3)
+        chunks: list[bytes] = []
+        for fr in frames_arr:
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                tmp_name = tmp.name
+            encode_strict_h264(fr[None], tmp_name)
+            with open(tmp_name, "rb") as fh:
+                chunks.append(fh.read())
+        # Mutate in-place: write_mcap's _encoded_frames checks isinstance(x, bytes).
+        c.frames = chunks
+        c.codec = "h264"
+    write_mcap(ep, out_mcap)
