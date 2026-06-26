@@ -103,11 +103,11 @@ def write_mcap(episode: Episode, path: str, layout: StateLayout = StateLayout.YA
                     topic = f"/{name.replace('_', '-')}-camera"
                 else:
                     topic = f"/{name}-camera"
-            frames, frame_ts = _encoded_frames(cam)
+            frames, frame_ts, eff_codec = _encoded_frames(cam)
             for j, chunk in enumerate(frames):
                 cv = CompressedVideo(
                     data=chunk,
-                    format=cam.codec,
+                    format=eff_codec,
                     frame_id=f"{name}-images-rgb",
                 )
                 cv.timestamp.FromNanoseconds(int(frame_ts[j]))
@@ -152,11 +152,16 @@ def encode_frame_to_annexb(frame_hwc) -> bytes:
 
 
 def _encoded_frames(cam):
-    """Return (list[bytes] Annex-B frames, timestamps np.int64).
+    """Return (list[bytes] Annex-B frames, timestamps np.int64, effective_codec str).
 
-    If frames are already bytes/bytearray, pass them through directly.
-    Decoded (ndarray) frames are encoded per-frame via encode_frame_to_annexb.
+    If frames are already bytes/bytearray, pass them through directly and
+    report the camera's own codec.  Decoded (ndarray) frames are encoded
+    per-frame via encode_frame_to_annexb and the effective codec is "h264".
     """
     if len(cam.frames) and isinstance(cam.frames[0], (bytes, bytearray)):
-        return [bytes(x) for x in cam.frames], np.asarray(cam.timestamps, np.int64)
-    return [encode_frame_to_annexb(fr) for fr in cam.frames], np.asarray(cam.timestamps, np.int64)
+        return [bytes(x) for x in cam.frames], np.asarray(cam.timestamps, np.int64), cam.codec
+    return (
+        [encode_frame_to_annexb(fr) for fr in cam.frames],
+        np.asarray(cam.timestamps, np.int64),
+        "h264",
+    )

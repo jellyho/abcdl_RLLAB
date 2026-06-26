@@ -41,7 +41,8 @@ def push(
         token=token,
     )
     h.create_tag(
-        repo_id=repo_id, repo_type="dataset", tag=version, revision=fmt, token=token
+        repo_id=repo_id, repo_type="dataset", tag=version, revision=fmt, token=token,
+        exist_ok=True,
     )
     return fmt
 

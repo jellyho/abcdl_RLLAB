@@ -51,7 +51,7 @@ class AbcdlDataset(Dataset):
     ):
         # If root is not an existing directory but looks like a Hub repo_id
         # (contains a "/" and is not an OS path), auto-download from the Hub.
-        if not os.path.isdir(root) and "/" in root:
+        if not os.path.isdir(root) and root.count("/") == 1 and not root.startswith((".", "/", "~")):
             owner_name = root.replace("/", "__")
             dest = revision_root or os.path.join(
                 os.path.expanduser("~"), ".cache", "abcdl", owner_name, version
@@ -168,7 +168,7 @@ class AbcdlDataset(Dataset):
         elif "tick_ns" in m:
             self._fps = 1e9 / int(m["tick_ns"])
         else:
-            self._fps = float(m.get("fps", 30.0))
+            self._fps = 30.0
         return int(m["state_dim"]), int(m["action_dim"])
 
     def _get_episode(self, ep_idx: int):

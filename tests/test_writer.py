@@ -37,3 +37,4 @@ def test_episode_writer_mcap_encodes_decoded_frames(tmp_path):
     assert back.meta.task == "t2"
     assert back.states.shape == (5, 14)
     assert "top" in back.cameras
+    assert back.cameras["top"].codec == "h264"

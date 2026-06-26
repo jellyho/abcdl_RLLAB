@@ -74,6 +74,8 @@ def abcdl_to_lerobot(
         raise ValueError(f"No abcdl episodes found in {abcdl_root!r}")
 
     first = read_abcdl(dirs[0])
+    if not first.meta.cameras:
+        raise ValueError("abcdl_to_lerobot: dataset has no cameras; state/action-only export not supported")
     h = first.cameras[first.meta.cameras[0]].frames.shape[1]
     w = first.cameras[first.meta.cameras[0]].frames.shape[2]
 
@@ -225,7 +227,7 @@ def lerobot_to_abcdl(repo_id_or_root: str, out_root: str) -> list[str]:
             cameras=cam_names,
             camera_resolutions=cam_resolutions,
             camera_codecs=cam_codecs,
-            alignment="fixed_clock_30hz_causal",
+            alignment=f"fixed_clock_{int(round(fps))}hz_causal",
             t0_ns=0,
             tick_ns=tick_ns,
         )
