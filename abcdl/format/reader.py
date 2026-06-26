@@ -7,7 +7,7 @@ import os
 
 import numpy as np
 
-from abcdl.constants import TICK_NS, TICKS_PER_FRAME
+from abcdl.constants import FPS, TICK_NS, TICKS_PER_FRAME
 from abcdl.episode import CameraStream, Episode, EpisodeMeta
 
 
@@ -16,7 +16,7 @@ def _decode_all_frames(mp4_path: str, num_steps: int) -> np.ndarray:
     from torchcodec.decoders import VideoDecoder
 
     frames = [{"pts": TICKS_PER_FRAME * i, "duration": TICKS_PER_FRAME,
-               "key_frame": 1 if i % 30 == 0 else 0} for i in range(num_steps)]
+               "key_frame": 1 if i % FPS == 0 else 0} for i in range(num_steps)]
     mapping = json.dumps({"frames": frames})
     dec = VideoDecoder(mp4_path, custom_frame_mappings=mapping)
     out = np.empty((num_steps, *dec[0].shape), dtype=np.uint8)  # (C,H,W) per frame

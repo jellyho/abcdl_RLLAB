@@ -102,6 +102,10 @@ def read_mcap(path: str, layout: StateLayout = StateLayout.YAM) -> Episode:
     # ---------------------------------------------------------------------------
     def stack(side: str, kind: str) -> tuple[np.ndarray, np.ndarray]:
         """Return (timestamps, array) of shape (T, 7) for *side*/*kind*."""
+        if (side, kind) not in arms:
+            raise ValueError(f"MCAP missing required topic /{side}-arm-{kind}")
+        if (side, kind) not in grips:
+            raise ValueError(f"MCAP missing required topic /{side}-ee-{kind}")
         a = sorted(arms[(side, kind)])
         g = sorted(grips[(side, kind)])
         a_ts = np.array([x[0] for x in a], np.int64)
@@ -135,17 +139,22 @@ def read_mcap(path: str, layout: StateLayout = StateLayout.YAM) -> Episode:
     # ---------------------------------------------------------------------------
     # Camera streams: sorted by timestamp, frames kept as raw bytes.
     # ---------------------------------------------------------------------------
+    # Build canonical camera order: known cameras in _CAM_TOPICS key order, then unknowns sorted.
+    _canonical_order = list(_CAM_TOPICS.keys())
+    _known = [n for n in _canonical_order if n in cams]
+    _unknown = sorted(n for n in cams if n not in _CAM_TOPICS)
+    cam_names: list[str] = _known + _unknown
+
     cam_streams: dict[str, CameraStream] = {}
-    cam_names: list[str] = []
     cam_res: dict[str, tuple[int, int]] = {}
     cam_codecs: dict[str, str] = {}
-    for name, lst in cams.items():
+    for name in cam_names:
+        lst = cams[name]
         lst_s = sorted(lst, key=lambda x: x[0])
         ts = np.array([x[0] for x in lst_s], np.int64)
         frames = [x[1] for x in lst_s]
         codec = lst_s[0][2]
         cam_streams[name] = CameraStream(frames=frames, timestamps=ts, width=0, height=0, codec=codec)
-        cam_names.append(name)
         cam_res[name] = (0, 0)
         cam_codecs[name] = codec
 

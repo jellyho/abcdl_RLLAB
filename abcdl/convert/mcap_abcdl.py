@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import warnings
 
 import numpy as np
 
@@ -102,9 +103,14 @@ def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
         c = ep.cameras[name]
         decoded = _decode_annexb(c.frames, c.codec, OUT_W, OUT_H)  # (Nframes, H, W, 3)
         nf = decoded.shape[0]
-        cam_ts = c.timestamps if nf == len(c.timestamps) else np.linspace(
-            c.timestamps[0], c.timestamps[-1], nf, dtype=np.int64
-        )
+        if nf == len(c.timestamps):
+            cam_ts = c.timestamps
+        else:
+            warnings.warn(
+                f"camera {name!r}: decoded {nf} frames but {len(c.timestamps)} timestamps; respacing",
+                stacklevel=2,
+            )
+            cam_ts = np.linspace(c.timestamps[0], c.timestamps[-1], nf, dtype=np.int64)
         cam_ts = np.asarray(cam_ts, np.int64)
         fi = _floor_idx(cam_ts, ticks)
         sel = decoded[fi]  # (T, OUT_H, OUT_W, 3)
