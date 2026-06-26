@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from abcdl import hf
 from abcdl.format.reader import read_abcdl
 
 
@@ -44,7 +45,19 @@ class AbcdlDataset(Dataset):
         delta_timestamps: Optional[dict] = None,
         camera_keys: Optional[list] = None,
         cache_episodes: int = 4,
+        fmt: str = "abcdl",
+        version: str = "latest",
+        revision_root: Optional[str] = None,
     ):
+        # If root is not an existing directory but looks like a Hub repo_id
+        # (contains a "/" and is not an OS path), auto-download from the Hub.
+        if not os.path.isdir(root) and "/" in root:
+            owner_name = root.replace("/", "__")
+            dest = revision_root or os.path.join(
+                os.path.expanduser("~"), ".cache", "abcdl", owner_name, version
+            )
+            os.makedirs(dest, exist_ok=True)
+            root = hf.pull(repo_id=root, fmt=fmt, version=version, dest=dest)
         self.root = root
         self.delta_timestamps = delta_timestamps or {}
 
@@ -102,6 +115,40 @@ class AbcdlDataset(Dataset):
             camera_keys=list(self.camera_keys),
             video_keys=[f"observation.images.{c}" for c in self.camera_keys],
             tasks=tasks,
+        )
+
+    # ------------------------------------------------------------------
+    # Hub convenience API (mirrors LeRobotDataset)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_hub(
+        cls,
+        repo_id: str,
+        fmt: str = "abcdl",
+        version: str = "latest",
+        root: Optional[str] = None,
+        **kw,
+    ) -> "AbcdlDataset":
+        """Download *repo_id* from the Hub and return a ready-to-use dataset."""
+        return cls(repo_id, fmt=fmt, version=version, revision_root=root, **kw)
+
+    def push_to_hub(
+        self,
+        repo_id: str,
+        version: str,
+        fmt: str = "abcdl",
+        message: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> str:
+        """Upload ``self.root`` to the Hub as *repo_id*, tagged *version*."""
+        return hf.push(
+            repo_id=repo_id,
+            local_dir=self.root,
+            fmt=fmt,
+            version=version,
+            message=message,
+            token=token,
         )
 
     # ------------------------------------------------------------------
