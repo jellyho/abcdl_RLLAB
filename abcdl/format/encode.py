@@ -26,13 +26,15 @@ _FFMPEG_ARGS = [
 
 
 def probe_frame_count(path: str) -> int:
-    out = subprocess.run(
+    result = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
          "-count_frames", "-show_entries", "stream=nb_read_frames",
          "-of", "csv=p=0", path],
         capture_output=True, text=True,
-    ).stdout.strip()
-    return int(out)
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for {path}: {result.stderr.strip()[-500:]}")
+    return int(result.stdout.strip())
 
 
 def encode_strict_h264(rgb_frames: np.ndarray, out_path: str) -> None:
@@ -42,12 +44,11 @@ def encode_strict_h264(rgb_frames: np.ndarray, out_path: str) -> None:
     proc = subprocess.Popen(
         ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
          "-s", f"{w}x{h}", "-r", str(FPS), "-i", "-", *_FFMPEG_ARGS, out_path],
-        stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    proc.stdin.write(np.ascontiguousarray(rgb_frames).tobytes())
-    proc.stdin.close()
-    if proc.wait() != 0:
-        raise RuntimeError("ffmpeg encode failed")
+    _, stderr = proc.communicate(input=np.ascontiguousarray(rgb_frames).tobytes())
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg encode failed: {stderr.decode(errors='replace')[-500:]}")
     got = probe_frame_count(out_path)
     if got != n:
         raise RuntimeError(f"encoded {got} frames, expected {n}")
