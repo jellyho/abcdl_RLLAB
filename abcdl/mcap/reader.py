@@ -116,15 +116,19 @@ def read_mcap(path: str, layout: StateLayout = StateLayout.YAM) -> Episode:
         return a_ts, np.concatenate([a_v, g_on_a], axis=1)      # (Ta, 7)
 
     lt, lstate = stack("left", "state")
-    _, laction = stack("left", "action")
+    la_ts, laction_v = stack("left", "action")
+    rs_ts, rstate_v = stack("right", "state")
+    ra_ts, raction_v = stack("right", "action")
 
-    rt, rstate = stack("right", "state")
-    _, raction = stack("right", "action")
-
-    # Align right onto left-state clock.
-    ri = _floor_idx(rt, lt)
-    states = np.concatenate([lstate, rstate[ri]], axis=1)    # (T, 14)
-    actions = np.concatenate([laction, raction[ri]], axis=1)  # (T, 14)
+    # The four streams (left/right x state/action) are polled on independent clocks
+    # and therefore have different lengths. Align every stream onto the left-arm-state
+    # clock (lt) using each stream's OWN timestamps — never index one stream with
+    # another stream's indices.
+    laction = laction_v[_floor_idx(la_ts, lt)]
+    rstate = rstate_v[_floor_idx(rs_ts, lt)]
+    raction = raction_v[_floor_idx(ra_ts, lt)]
+    states = np.concatenate([lstate, rstate], axis=1)    # (T, 14)
+    actions = np.concatenate([laction, raction], axis=1)  # (T, 14)
 
     # ---------------------------------------------------------------------------
     # EE poses: reshape flat 16-D pose to (4,4) and align to left-state clock.
