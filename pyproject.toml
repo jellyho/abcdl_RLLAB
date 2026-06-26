@@ -11,13 +11,12 @@ dependencies = [
     "mcap-protobuf-support",
     "protobuf",
     "foxglove-schemas-protobuf",
-    "grpcio-tools",
 ]
 
 [project.optional-dependencies]
 lerobot = ["lerobot"]
 s3 = ["s3fs", "boto3"]
-dev = ["pytest"]
+dev = ["pytest", "grpcio-tools"]
 
 [build-system]
 requires = ["setuptools>=68"]

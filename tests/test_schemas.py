@@ -16,3 +16,8 @@ def test_gripperstate_and_instructions():
     assert g.position[0] == 0.5
     ins = schemas.Instructions(data="open the umbrella")
     assert ins.data == "open the umbrella"
+
+
+def test_annotation():
+    a = schemas.Annotation(data="subtask: grab")
+    assert a.data == "subtask: grab"
