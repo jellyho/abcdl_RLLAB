@@ -203,9 +203,14 @@ Compatibility is **duck-typed** (no LeRobot subclassing) to avoid a hard LeRobot
 load time; a thin `as_lerobot_compatible()` shim documents the exact contract.
 
 ### 6.4 `hf.py` + `backends.py` — HuggingFace & cloud
-- **Layout:** one repo per dataset; **branch per format** (`mcap`, `abcdl`), **tag per
-  version** (`v1`, `v2`, …); `main` carries only the dataset card + a manifest of available
-  formats/versions.
+- **Layout:** one repo per dataset; **branch per format**, **tag per version** (`v1`, `v2`,
+  …); `main` carries only the dataset card + a manifest of available formats/versions.
+  Branch names: **`mcap`** = full-resolution source recordings (archival; only this can be
+  re-processed); **`abcdl_<size>`** = the downscaled training cache at that square
+  resolution (e.g. `abcdl_224`, `abcdl_256`) — multiple resolutions coexist as separate
+  branches in one repo. Use `abcdl.convert.mcap_abcdl.abcdl_format_name(size)` for the name
+  and `mcap_to_abcdl(src, dst, size=...)` to produce a given resolution. mcap is ~7× larger
+  than `abcdl_224` (full-res vs 224 downscale) but is the only re-derivable source.
 - **API:**
   - `push(repo_id, root, format, version, message=…)` → commit to branch `format`, tag `version`.
   - `pull(repo_id, format, version="latest", dest=…, stream=False)` → download or stream

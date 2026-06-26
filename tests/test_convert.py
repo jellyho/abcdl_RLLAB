@@ -3,11 +3,17 @@ import shutil
 import numpy as np
 import pytest
 
-from abcdl.convert.mcap_abcdl import mcap_to_abcdl
+from abcdl.convert.mcap_abcdl import abcdl_format_name, mcap_to_abcdl
 from abcdl.format.reader import read_abcdl
 from abcdl.mcap.reader import read_mcap
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+
+
+def test_abcdl_format_name():
+    assert abcdl_format_name() == "abcdl_224"
+    assert abcdl_format_name(224) == "abcdl_224"
+    assert abcdl_format_name(256) == "abcdl_256"
 
 
 def test_abcdl_to_mcap_smoke(tmp_path):
@@ -48,4 +54,18 @@ def test_mcap_to_abcdl_fixed_clock(sample_mcap, tmp_path):
     # 14-D state preserved; frame count equals state count
     assert ep.states.shape[1] == 14
     for name in ep.meta.cameras:
+        assert len(ep.cameras[name].frames) == ep.num_steps
+        # default size is 224x224, recorded in metadata and the decoded frames
+        assert ep.meta.camera_resolutions[name] == (224, 224)
+        assert ep.cameras[name].frames.shape[1:3] == (224, 224)
+
+
+def test_mcap_to_abcdl_custom_size(sample_mcap, tmp_path):
+    out = tmp_path / "ep96"
+    mcap_to_abcdl(str(sample_mcap), str(out), size=96)
+    ep = read_abcdl(str(out))
+    assert ep.states.shape[1] == 14
+    for name in ep.meta.cameras:
+        assert ep.meta.camera_resolutions[name] == (96, 96)
+        assert ep.cameras[name].frames.shape[1:3] == (96, 96)
         assert len(ep.cameras[name].frames) == ep.num_steps

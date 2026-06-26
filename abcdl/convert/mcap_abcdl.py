@@ -24,7 +24,17 @@ from abcdl.format.writer import write_abcdl
 from abcdl.mcap.reader import read_mcap
 from abcdl.mcap.writer import write_mcap
 
-OUT_W = OUT_H = 224
+DEFAULT_SIZE = 224  # default square output resolution for the abcdl training cache
+
+
+def abcdl_format_name(size: int = DEFAULT_SIZE) -> str:
+    """Format/branch name for an abcdl training cache at *size* px, e.g. ``abcdl_224``.
+
+    The HF layout names the source branch ``mcap`` and each training-cache branch
+    ``abcdl_<size>``, so multiple resolutions can coexist in one dataset repo:
+    ``hf.push(repo_id, dir, fmt=abcdl_format_name(224), version="v1")``.
+    """
+    return f"abcdl_{int(size)}"
 
 
 def _floor_idx(src_ts: np.ndarray, tgt_ts: np.ndarray) -> np.ndarray:
@@ -71,14 +81,18 @@ def _decode_annexb(chunks: list[bytes], codec: str, out_w: int, out_h: int) -> n
         os.unlink(raw_name)
 
 
-def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
+def mcap_to_abcdl(src_mcap: str, out_dir: str, size: int = DEFAULT_SIZE) -> None:
     """Read *src_mcap* (ABC-130k), resample to a fixed 30 Hz causal clock, write abcdl.
+
+    *size* is the square output resolution (pixels) every camera is scaled/padded to;
+    it is also the resolution encoded in the format/branch name convention
+    ``abcdl_<size>`` (e.g. ``abcdl_224``) — see :func:`abcdl_format_name`.
 
     Resampling strategy:
       - ``ticks = np.arange(t0 + TICK_NS, t_end + 1, TICK_NS)``  (causal: first tick
         is one period after the first state sample so all ticks have a valid floor sample).
       - States and actions are floor-sampled (latest sample at-or-before each tick).
-      - Each camera's Annex-B stream is decoded via ffmpeg, scaled/padded to 224x224,
+      - Each camera's Annex-B stream is decoded via ffmpeg, scaled/padded to size x size,
         then floor-sampled onto the same tick grid.
       - The resulting Episode has alignment == "fixed_clock_30hz_causal" and fps == 30.
     """
@@ -101,7 +115,7 @@ def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
     codecs: dict[str, str] = {}
     for name in ep.meta.cameras:
         c = ep.cameras[name]
-        decoded = _decode_annexb(c.frames, c.codec, OUT_W, OUT_H)  # (Nframes, H, W, 3)
+        decoded = _decode_annexb(c.frames, c.codec, size, size)  # (Nframes, H, W, 3)
         nf = decoded.shape[0]
         if nf == len(c.timestamps):
             cam_ts = c.timestamps
@@ -113,11 +127,11 @@ def mcap_to_abcdl(src_mcap: str, out_dir: str) -> None:
             cam_ts = np.linspace(c.timestamps[0], c.timestamps[-1], nf, dtype=np.int64)
         cam_ts = np.asarray(cam_ts, np.int64)
         fi = _floor_idx(cam_ts, ticks)
-        sel = decoded[fi]  # (T, OUT_H, OUT_W, 3)
+        sel = decoded[fi]  # (T, size, size, 3)
         cams[name] = CameraStream(
-            frames=sel, timestamps=ticks.copy(), width=OUT_W, height=OUT_H, codec="raw"
+            frames=sel, timestamps=ticks.copy(), width=size, height=size, codec="raw"
         )
-        res[name] = (OUT_W, OUT_H)
+        res[name] = (size, size)
         codecs[name] = "h264"
 
     meta = EpisodeMeta(
