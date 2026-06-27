@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from abcdl import hf
-from abcdl.format.reader import read_abcdl
+from abcdl.format.reader import open_episode
 
 
 @dataclass
@@ -34,9 +34,10 @@ class AbcdlDataset(Dataset):
       - combined_camera-images-rgb.mp4
       - episode_metadata.json
 
-    Decodes each episode once via ``read_abcdl`` and keeps the N most-recently
-    accessed episodes in an LRU cache so shuffled access does not re-decode
-    every item.
+    Keeps an LRU cache of lightweight per-episode handles (an open torchcodec
+    decoder + the small states/actions arrays). ``__getitem__`` decodes ONLY the
+    requested frame via the analytic index — so shuffled access never decodes a
+    whole episode, the access pattern abcdl is built for.
     """
 
     def __init__(
@@ -44,7 +45,7 @@ class AbcdlDataset(Dataset):
         root: str,
         delta_timestamps: Optional[dict] = None,
         camera_keys: Optional[list] = None,
-        cache_episodes: int = 4,
+        cache_episodes: int = 32,
         fmt: str = "abcdl",
         version: str = "latest",
         revision_root: Optional[str] = None,
@@ -171,19 +172,17 @@ class AbcdlDataset(Dataset):
             self._fps = 30.0
         return int(m["state_dim"]), int(m["action_dim"])
 
-    def _get_episode(self, ep_idx: int):
-        """Return a decoded Episode, loading and caching if necessary (LRU)."""
+    def _get_handle(self, ep_idx: int):
+        """Return a per-episode random-access handle, opening + caching (LRU)."""
         if ep_idx in self._cache:
-            # Move to end (most recently used).
             self._cache.move_to_end(ep_idx)
             return self._cache[ep_idx]
-        ep = read_abcdl(self._dirs[ep_idx])
-        self._cache[ep_idx] = ep
+        h = open_episode(self._dirs[ep_idx])
+        self._cache[ep_idx] = h
         self._cache.move_to_end(ep_idx)
-        # Evict least-recently-used episode when cache exceeds capacity.
         if len(self._cache) > self._cache_n:
             self._cache.popitem(last=False)
-        return ep
+        return h
 
     def _locate(self, idx: int) -> tuple[int, int]:
         """Map a global frame index to (episode_index, frame_within_episode).
@@ -209,14 +208,12 @@ class AbcdlDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict:
         ep_idx, frame = self._locate(idx)
-        ep = self._get_episode(ep_idx)
-        n = ep.num_steps
+        h = self._get_handle(ep_idx)
+        n = h.num_steps
 
         out: dict = {
-            "observation.state": torch.from_numpy(
-                ep.states[frame].astype(np.float32)
-            ),
-            "task": ep.meta.task,
+            "observation.state": torch.from_numpy(h.states[frame].astype(np.float32)),
+            "task": h.task,
             "timestamp": torch.tensor(frame / self._fps, dtype=torch.float32),
             "episode_index": torch.tensor(ep_idx, dtype=torch.long),
             "frame_index": torch.tensor(frame, dtype=torch.long),
@@ -233,17 +230,15 @@ class AbcdlDataset(Dataset):
                 for o in offsets
             ]
             # rows is a Python list of ints → fancy indexing → (K, A)
-            out["action"] = torch.from_numpy(
-                ep.actions[rows].astype(np.float32)
-            )
+            out["action"] = torch.from_numpy(h.actions[rows].astype(np.float32))
         else:
-            out["action"] = torch.from_numpy(ep.actions[frame].astype(np.float32))
+            out["action"] = torch.from_numpy(h.actions[frame].astype(np.float32))
 
-        # Camera images: HWC uint8 → CHW float32 in [0, 1].
+        # Camera images: decode ONLY this frame, split per camera, HWC→CHW float [0,1].
+        cams = h.frame(frame)
         for cam in self.camera_keys:
-            hwc = ep.cameras[cam].frames[frame]  # (H, W, 3) uint8
             chw = (
-                torch.from_numpy(np.ascontiguousarray(hwc))
+                torch.from_numpy(np.ascontiguousarray(cams[cam]))
                 .permute(2, 0, 1)
                 .float()
                 .div(255.0)
