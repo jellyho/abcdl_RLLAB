@@ -46,3 +46,20 @@ def test_meta_features(tmp_path, tmp_abcdl_episode):
     assert set(ds.meta.camera_keys) == {"top", "left_wrist"}
     assert "observation.state" in ds.meta.features
     assert ds.meta.features["observation.state"]["shape"] == (14,)
+
+
+def test_dataloader_multiworker_fork_safe(tmp_path, tmp_abcdl_episode):
+    """torchcodec decoders are not fork-safe; the dataset must reset its decoder
+    cache per worker process so a num_workers>0 DataLoader does not crash."""
+    from torch.utils.data import DataLoader
+
+    root = _make_root(tmp_path, tmp_abcdl_episode)
+    ds = AbcdlDataset(root)
+    _ = ds[0]  # populate the parent-process decoder cache before forking workers
+    dl = DataLoader(ds, batch_size=4, num_workers=2, shuffle=True)
+    seen = 0
+    for batch in dl:
+        assert batch["observation.state"].shape == (min(4, len(ds)), 14)
+        assert batch["observation.images.top"].shape[1] == 3  # (B, C, H, W)
+        seen += batch["observation.state"].shape[0]
+    assert seen == len(ds)

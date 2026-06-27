@@ -91,9 +91,12 @@ class AbcdlDataset(Dataset):
         self.num_frames: int = int(self._starts[-1])
         self.num_episodes: int = len(self._dirs)
 
-        # LRU episode cache: {ep_idx: Episode}
+        # LRU cache of per-episode handles {ep_idx: EpisodeHandle}. torchcodec
+        # decoders are NOT fork-safe, so the cache is tagged with the owning PID
+        # and reset when accessed from a different process (a DataLoader worker).
         self._cache: OrderedDict = OrderedDict()
         self._cache_n: int = cache_episodes
+        self._cache_pid: int = os.getpid()
 
         # Probe the first episode for fps and dimensions.
         s_dim, a_dim = self._probe_dims()
@@ -174,6 +177,11 @@ class AbcdlDataset(Dataset):
 
     def _get_handle(self, ep_idx: int):
         """Return a per-episode random-access handle, opening + caching (LRU)."""
+        # In a forked DataLoader worker the inherited decoders are invalid; drop them.
+        pid = os.getpid()
+        if pid != self._cache_pid:
+            self._cache = OrderedDict()
+            self._cache_pid = pid
         if ep_idx in self._cache:
             self._cache.move_to_end(ep_idx)
             return self._cache[ep_idx]
