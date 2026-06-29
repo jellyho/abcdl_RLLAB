@@ -51,8 +51,12 @@ class AbcdlDataset(Dataset):
         revision_root: Optional[str] = None,
         episodes: Optional[list] = None,
         streaming: bool = False,
+        decode_video: bool = True,
     ):
         self.streaming = streaming
+        # When False, skip video decode entirely and return only state/action/features
+        # (all memmap'd) — the fast path for RL / precomputed-embedding training.
+        self.decode_video = decode_video
         self.delta_timestamps = delta_timestamps or {}
         self._lengths: list[int] = []
         self._tasks_per_ep: list[str] = []
@@ -265,9 +269,9 @@ class AbcdlDataset(Dataset):
             self._cache.move_to_end(ep_idx)
             return self._cache[ep_idx]
         if self.streaming:
-            h = open_episode_streaming(self._get_fs(), self._ep_uris[ep_idx])
+            h = open_episode_streaming(self._get_fs(), self._ep_uris[ep_idx], with_video=self.decode_video)
         else:
-            h = open_episode(self._dirs[ep_idx])
+            h = open_episode(self._dirs[ep_idx], with_video=self.decode_video)
         self._cache[ep_idx] = h
         self._cache.move_to_end(ep_idx)
         if len(self._cache) > self._cache_n:
@@ -322,20 +326,21 @@ class AbcdlDataset(Dataset):
             if src is not None:
                 out[key] = torch.from_numpy(src[rows].astype(np.float32))
 
-        # Per-frame features (reward, mc_return, success, …) at this frame.
+        # Per-frame features (reward, mc_return, success, embeddings, …) — memmap row read.
         for name, arr in h.frame_features.items():
-            out[name] = torch.as_tensor(arr[frame])
+            out[name] = torch.as_tensor(np.ascontiguousarray(arr[frame]))
 
-        # Camera images: decode ONLY this frame, split per camera, HWC→CHW float [0,1].
-        cams = h.frame(frame)
-        for cam in self.camera_keys:
-            chw = (
-                torch.from_numpy(np.ascontiguousarray(cams[cam]))
-                .permute(2, 0, 1)
-                .float()
-                .div(255.0)
-            )
-            out[f"observation.images.{cam}"] = chw
+        # Camera images: decode ONLY this frame (skipped entirely in features-only mode).
+        if self.decode_video:
+            cams = h.frame(frame)
+            for cam in self.camera_keys:
+                chw = (
+                    torch.from_numpy(np.ascontiguousarray(cams[cam]))
+                    .permute(2, 0, 1)
+                    .float()
+                    .div(255.0)
+                )
+                out[f"observation.images.{cam}"] = chw
 
         return out
 

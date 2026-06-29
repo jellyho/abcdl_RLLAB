@@ -35,17 +35,18 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
     combined = np.concatenate(stacks, axis=1)  # vstack along height
     encode_strict_h264(combined, os.path.join(out_dir, "combined_camera-images-rgb.mp4"))
 
-    # Named per-frame features (reward, mc_return, success, …) → frame_features.npz.
-    frame_feature_keys: list = []
+    # Named per-frame features (reward, mc_return, success, embeddings, …): each stored
+    # as its own raw, contiguous ``ff_<name>.bin`` so the loader can MEMMAP it and read
+    # only the touched frame rows (no decode, no whole-episode load) — the fast path for
+    # large-batch / high-iteration RL training. dtype + per-frame shape go in metadata.
+    frame_features_meta: dict = {}
     if episode.frame_features:
-        arrays = {}
         for name, arr in episode.frame_features.items():
-            a = np.asarray(arr)
+            a = np.ascontiguousarray(arr)
             if a.shape[0] != T:
                 raise ValueError(f"frame_feature {name!r} has length {a.shape[0]}, expected {T}")
-            arrays[name] = a
-        np.savez(os.path.join(out_dir, "frame_features.npz"), **arrays)
-        frame_feature_keys = list(arrays.keys())
+            a.tofile(os.path.join(out_dir, f"ff_{name}.bin"))
+            frame_features_meta[name] = {"dtype": str(a.dtype), "shape": list(a.shape[1:])}
 
     tick_ns = int(episode.meta.tick_ns or TICK_NS)
     meta = {
@@ -64,7 +65,8 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
         "action_dim": int(episode.actions.shape[1]),
         "operator_id": episode.meta.operator_id,
         "session_id": episode.meta.session_id,
-        "frame_feature_keys": frame_feature_keys,
+        "frame_feature_keys": list(frame_features_meta),   # back-compat list
+        "frame_features": frame_features_meta,             # {name: {dtype, shape}}
     }
     with open(os.path.join(out_dir, "episode_metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)
