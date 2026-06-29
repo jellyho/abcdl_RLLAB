@@ -39,7 +39,8 @@ class EpisodeHandle:
     """
 
     def __init__(self, decoder, states: np.ndarray, actions: np.ndarray,
-                 cam_names: list, cam_h: int, task: str, fps: float, num_steps: int):
+                 cam_names: list, cam_h: int, task: str, fps: float, num_steps: int,
+                 keep=None):
         self.decoder = decoder
         self.states = states
         self.actions = actions
@@ -48,6 +49,7 @@ class EpisodeHandle:
         self.task = task
         self.fps = fps
         self.num_steps = num_steps
+        self._keep = keep  # holds an open remote file object alive (streaming)
 
     def frame(self, i: int) -> dict:
         """Decode ONLY frame *i*; return ``{cam_name: (H, W, 3) uint8}``."""
@@ -57,22 +59,47 @@ class EpisodeHandle:
                 for k, name in enumerate(self.cam_names)}
 
 
-def open_episode(in_dir: str) -> EpisodeHandle:
-    """Open an abcdl episode for efficient random per-frame access (no full decode)."""
+def _handle_from(meta: dict, sa: np.ndarray, mp4_source, keep=None) -> EpisodeHandle:
+    """Build an EpisodeHandle from metadata, a states+actions array, and an mp4 source
+    (a local path OR a seekable file-like — the latter lets torchcodec range-read a
+    remote file, i.e. stream only the GOP it needs)."""
     from torchcodec.decoders import VideoDecoder
 
-    with open(os.path.join(in_dir, "episode_metadata.json")) as f:
-        meta = json.load(f)
     T = int(meta["num_steps"])
     sd, ad = int(meta["state_dim"]), int(meta["action_dim"])
-    sa = np.fromfile(os.path.join(in_dir, "states_actions.bin"), dtype="<f8").reshape(T, sd + ad)
     names = list(meta["cameras"])
     cam_h = int(meta["camera_resolutions"][names[0]][1])  # (width, height) -> height
     tick_ns = int(meta.get("tick_ns", TICK_NS))
     fps = float(meta["fps"]) if "fps" in meta else (1e9 / tick_ns if tick_ns else 30.0)
-    dec = VideoDecoder(os.path.join(in_dir, "combined_camera-images-rgb.mp4"),
-                       custom_frame_mappings=_synth_frame_map(T))
-    return EpisodeHandle(dec, sa[:, :sd], sa[:, sd:], names, cam_h, meta["task_name"], fps, T)
+    dec = VideoDecoder(mp4_source, custom_frame_mappings=_synth_frame_map(T))
+    return EpisodeHandle(dec, sa[:, :sd], sa[:, sd:], names, cam_h, meta["task_name"],
+                         fps, T, keep=keep)
+
+
+def open_episode(in_dir: str) -> EpisodeHandle:
+    """Open a LOCAL abcdl episode for efficient random per-frame access (no full decode)."""
+    with open(os.path.join(in_dir, "episode_metadata.json")) as f:
+        meta = json.load(f)
+    row = int(meta["state_dim"]) + int(meta["action_dim"])
+    sa = np.fromfile(os.path.join(in_dir, "states_actions.bin"), dtype="<f8").reshape(-1, row)
+    return _handle_from(meta, sa, os.path.join(in_dir, "combined_camera-images-rgb.mp4"))
+
+
+def open_episode_streaming(fs, ep_uri: str) -> EpisodeHandle:
+    """Open a REMOTE abcdl episode over fsspec, streaming frames via HTTP range reads.
+
+    *fs* is an fsspec filesystem (e.g. ``huggingface_hub.HfFileSystem``); *ep_uri* is the
+    episode directory path within it. The small states/actions binary and metadata are
+    fetched whole; the combined mp4 is opened as a seekable remote file so torchcodec
+    only fetches the bytes for the decoded frame's GOP (no full download).
+    """
+    with fs.open(f"{ep_uri}/episode_metadata.json") as f:
+        meta = json.load(f)
+    row = int(meta["state_dim"]) + int(meta["action_dim"])
+    with fs.open(f"{ep_uri}/states_actions.bin", "rb") as f:
+        sa = np.frombuffer(f.read(), dtype="<f8").reshape(-1, row)
+    mp4 = fs.open(f"{ep_uri}/combined_camera-images-rgb.mp4", "rb")  # seekable; kept alive
+    return _handle_from(meta, sa, mp4, keep=mp4)
 
 
 def read_abcdl(in_dir: str) -> Episode:

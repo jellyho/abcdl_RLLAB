@@ -69,6 +69,21 @@ def test_openpi_surface(tmp_path, tmp_abcdl_episode):
     assert ds2[0]["actions"].shape == (3, 14)
 
 
+def test_streaming_from_hub():
+    """Stream an abcdl dataset from the Hub via HTTP range reads (no full download).
+
+    Network-gated: skips when offline / the public demo repo is unreachable.
+    """
+    try:
+        ds = AbcdlDataset("jellyho/abcdl_demo", fmt="abcdl_224", streaming=True)
+        item = ds[ds.num_frames // 2]
+    except Exception as e:  # noqa: BLE001 - any network/HF error -> skip, not fail
+        pytest.skip(f"streaming demo repo unreachable: {type(e).__name__}: {e}")
+    assert ds.num_episodes > 0 and len(ds) > 0
+    assert item["observation.state"].ndim == 1
+    assert item["observation.images." + ds.meta.camera_keys[0]].shape[0] == 3  # CHW
+
+
 def test_dataloader_multiworker_fork_safe(tmp_path, tmp_abcdl_episode):
     """torchcodec decoders are not fork-safe; the dataset must reset its decoder
     cache per worker process so a num_workers>0 DataLoader does not crash."""

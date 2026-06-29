@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import Dataset
 
 from abcdl import hf
-from abcdl.format.reader import open_episode
+from abcdl.format.reader import open_episode, open_episode_streaming
 
 
 @dataclass
@@ -50,51 +50,79 @@ class AbcdlDataset(Dataset):
         version: str = "latest",
         revision_root: Optional[str] = None,
         episodes: Optional[list] = None,
+        streaming: bool = False,
     ):
-        # If root is not an existing directory but looks like a Hub repo_id
-        # (contains a "/" and is not an OS path), auto-download from the Hub.
-        if not os.path.isdir(root) and root.count("/") == 1 and not root.startswith((".", "/", "~")):
-            owner_name = root.replace("/", "__")
-            dest = revision_root or os.path.join(
-                os.path.expanduser("~"), ".cache", "abcdl", owner_name, version
-            )
-            os.makedirs(dest, exist_ok=True)
-            root = hf.pull(repo_id=root, fmt=fmt, version=version, dest=dest)
-        self.root = root
+        self.streaming = streaming
         self.delta_timestamps = delta_timestamps or {}
-
-        # Discover episode dirs (sorted for determinism).
-        self._dirs: list[str] = sorted(
-            os.path.join(root, d)
-            for d in os.listdir(root)
-            if os.path.isdir(os.path.join(root, d))
-            and os.path.exists(os.path.join(root, d, "states_actions.bin"))
-        )
-        if not self._dirs:
-            raise ValueError(f"no abcdl episodes under {root}")
-
-        # Optional episode subset (e.g. openpi success-only filtering), by index.
-        if episodes is not None:
-            self._dirs = [self._dirs[i] for i in episodes]
-
-        # Read per-episode lengths and camera list from metadata JSON.
         self._lengths: list[int] = []
         self._tasks_per_ep: list[str] = []
         self._cams: Optional[list[str]] = None
-        for d in self._dirs:
-            with open(os.path.join(d, "episode_metadata.json")) as f:
-                m = json.load(f)
-            self._lengths.append(int(m["num_steps"]))
-            self._tasks_per_ep.append(m["task_name"])
-            if self._cams is None:
-                self._cams = list(m["cameras"])
+        # Streaming uses an fsspec filesystem (created per-process for fork safety).
+        self._fs = None
+        self._fs_pid: Optional[int] = None
+        self._ep_uris: list[str] = []
+        self._dirs: list[str] = []
+
+        if streaming:
+            # Stream from the Hub: list episodes + read metadata over fsspec, decode
+            # frames via HTTP range reads (no full download). root must be a repo_id.
+            self.root = root
+            self._repo = root
+            self._rev = fmt if version == "latest" else f"{fmt}-{version}"
+            fs = self._get_fs()
+            base = f"datasets/{root}@{self._rev}"
+            self._ep_uris = sorted(
+                e for e in fs.ls(base, detail=False)
+                if fs.exists(f"{e}/states_actions.bin")
+            )
+            if not self._ep_uris:
+                raise ValueError(f"no abcdl episodes in {base}")
+            if episodes is not None:
+                self._ep_uris = [self._ep_uris[i] for i in episodes]
+            for e in self._ep_uris:
+                with fs.open(f"{e}/episode_metadata.json") as f:
+                    m = json.load(f)
+                self._lengths.append(int(m["num_steps"]))
+                self._tasks_per_ep.append(m["task_name"])
+                if self._cams is None:
+                    self._cams = list(m["cameras"])
+                    self._first_meta = m
+        else:
+            # If root is not an existing directory but looks like a Hub repo_id
+            # (contains a "/" and is not an OS path), auto-download from the Hub.
+            if not os.path.isdir(root) and root.count("/") == 1 and not root.startswith((".", "/", "~")):
+                owner_name = root.replace("/", "__")
+                dest = revision_root or os.path.join(
+                    os.path.expanduser("~"), ".cache", "abcdl", owner_name, version
+                )
+                os.makedirs(dest, exist_ok=True)
+                root = hf.pull(repo_id=root, fmt=fmt, version=version, dest=dest)
+            self.root = root
+            self._dirs = sorted(
+                os.path.join(root, d)
+                for d in os.listdir(root)
+                if os.path.isdir(os.path.join(root, d))
+                and os.path.exists(os.path.join(root, d, "states_actions.bin"))
+            )
+            if not self._dirs:
+                raise ValueError(f"no abcdl episodes under {root}")
+            if episodes is not None:
+                self._dirs = [self._dirs[i] for i in episodes]
+            for d in self._dirs:
+                with open(os.path.join(d, "episode_metadata.json")) as f:
+                    m = json.load(f)
+                self._lengths.append(int(m["num_steps"]))
+                self._tasks_per_ep.append(m["task_name"])
+                if self._cams is None:
+                    self._cams = list(m["cameras"])
+                    self._first_meta = m
 
         self.camera_keys: list[str] = camera_keys or self._cams or []
 
         # Cumulative start indices; length N+1 where N = num_episodes.
         self._starts: np.ndarray = np.cumsum([0] + self._lengths)
         self.num_frames: int = int(self._starts[-1])
-        self.num_episodes: int = len(self._dirs)
+        self.num_episodes: int = len(self._ep_uris) if self.streaming else len(self._dirs)
 
         # LRU cache of per-episode handles {ep_idx: EpisodeHandle}. torchcodec
         # decoders are NOT fork-safe, so the cache is tagged with the owning PID
@@ -177,9 +205,7 @@ class AbcdlDataset(Dataset):
     def _card_metadata(self, description: Optional[str] = None) -> dict:
         """Collect dataset stats for the auto-generated dataset card."""
         resolution = None
-        with open(os.path.join(self._dirs[0], "episode_metadata.json")) as f:
-            m = json.load(f)
-        cr = m.get("camera_resolutions", {})
+        cr = self._first_meta.get("camera_resolutions", {})
         if self.camera_keys and self.camera_keys[0] in cr:
             resolution = tuple(cr[self.camera_keys[0]])  # (width, height)
         return {
@@ -205,8 +231,7 @@ class AbcdlDataset(Dataset):
         Prefers the explicit ``fps`` field written by the writer (exact).
         Falls back to ``1e9 / tick_ns`` for older files that lack the field.
         """
-        with open(os.path.join(self._dirs[0], "episode_metadata.json")) as f:
-            m = json.load(f)
+        m = self._first_meta
         if "fps" in m:
             self._fps: float = float(m["fps"])
         elif "tick_ns" in m:
@@ -214,6 +239,16 @@ class AbcdlDataset(Dataset):
         else:
             self._fps = 30.0
         return int(m["state_dim"]), int(m["action_dim"])
+
+    def _get_fs(self):
+        """An fsspec HfFileSystem, created per-process (fork-safe; connections don't
+        survive fork) for streaming mode."""
+        pid = os.getpid()
+        if self._fs is None or self._fs_pid != pid:
+            from huggingface_hub import HfFileSystem
+            self._fs = HfFileSystem()
+            self._fs_pid = pid
+        return self._fs
 
     def _get_handle(self, ep_idx: int):
         """Return a per-episode random-access handle, opening + caching (LRU)."""
@@ -225,7 +260,10 @@ class AbcdlDataset(Dataset):
         if ep_idx in self._cache:
             self._cache.move_to_end(ep_idx)
             return self._cache[ep_idx]
-        h = open_episode(self._dirs[ep_idx])
+        if self.streaming:
+            h = open_episode_streaming(self._get_fs(), self._ep_uris[ep_idx])
+        else:
+            h = open_episode(self._dirs[ep_idx])
         self._cache[ep_idx] = h
         self._cache.move_to_end(ep_idx)
         if len(self._cache) > self._cache_n:
