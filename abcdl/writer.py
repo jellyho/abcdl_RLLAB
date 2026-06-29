@@ -35,7 +35,8 @@ class EpisodeWriter:
         for name in self.cameras:
             self._frames.setdefault(name, []).append(np.asarray(images[name], np.uint8))
 
-    def save(self, task: str, operator_id: Optional[str] = None) -> dict:
+    def save(self, task: str, operator_id: Optional[str] = None,
+             frame_features: Optional[dict] = None) -> dict:
         T = len(self._t)
         if T == 0:
             raise ValueError("no frames added")
@@ -49,7 +50,8 @@ class EpisodeWriter:
         meta = EpisodeMeta(task=task, fps=float(self.fps), cameras=list(self.cameras),
                            camera_resolutions=res, camera_codecs=codecs, operator_id=operator_id,
                            alignment="fixed_clock_30hz_causal", t0_ns=int(ts[0]), tick_ns=TICK_NS)
-        ep = Episode(np.stack(self._states), np.stack(self._actions), ts, cams, meta)
+        ep = Episode(np.stack(self._states), np.stack(self._actions), ts, cams, meta,
+                     frame_features=frame_features)
         out = {}
         if "abcdl" in self.formats:
             write_abcdl(ep, self.out_dir); out["abcdl"] = self.out_dir

@@ -149,6 +149,10 @@ class AbcdlDataset(Dataset):
                 "shape": None,
                 "names": None,
             }
+        # Per-frame extra features (reward, mc_return, success, …) declared in metadata.
+        self.frame_feature_keys: list = list(self._first_meta.get("frame_feature_keys", []))
+        for k in self.frame_feature_keys:
+            feats[k] = {"dtype": "float32", "shape": None, "names": None}
 
         self.meta = AbcdlDatasetMeta(
             features=feats,
@@ -317,6 +321,10 @@ class AbcdlDataset(Dataset):
             src = h.actions if "action" in key else (h.states if "state" in key else None)
             if src is not None:
                 out[key] = torch.from_numpy(src[rows].astype(np.float32))
+
+        # Per-frame features (reward, mc_return, success, …) at this frame.
+        for name, arr in h.frame_features.items():
+            out[name] = torch.as_tensor(arr[frame])
 
         # Camera images: decode ONLY this frame, split per camera, HWC→CHW float [0,1].
         cams = h.frame(frame)

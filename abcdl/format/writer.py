@@ -35,6 +35,18 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
     combined = np.concatenate(stacks, axis=1)  # vstack along height
     encode_strict_h264(combined, os.path.join(out_dir, "combined_camera-images-rgb.mp4"))
 
+    # Named per-frame features (reward, mc_return, success, …) → frame_features.npz.
+    frame_feature_keys: list = []
+    if episode.frame_features:
+        arrays = {}
+        for name, arr in episode.frame_features.items():
+            a = np.asarray(arr)
+            if a.shape[0] != T:
+                raise ValueError(f"frame_feature {name!r} has length {a.shape[0]}, expected {T}")
+            arrays[name] = a
+        np.savez(os.path.join(out_dir, "frame_features.npz"), **arrays)
+        frame_feature_keys = list(arrays.keys())
+
     tick_ns = int(episode.meta.tick_ns or TICK_NS)
     meta = {
         "task_name": episode.meta.task,
@@ -52,6 +64,7 @@ def write_abcdl(episode: Episode, out_dir: str) -> None:
         "action_dim": int(episode.actions.shape[1]),
         "operator_id": episode.meta.operator_id,
         "session_id": episode.meta.session_id,
+        "frame_feature_keys": frame_feature_keys,
     }
     with open(os.path.join(out_dir, "episode_metadata.json"), "w") as f:
         json.dump(meta, f, indent=2)

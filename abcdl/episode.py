@@ -66,6 +66,9 @@ class Episode:
     ee_poses: Optional[dict] = None   # {side: (T,4,4)}
     extras: Optional[dict] = None     # {side: {"velocity":..., "torque":...}}
     subtasks: Optional[list] = None   # [(t_ns, label)]
+    # Named per-frame scalar/vector features, each leading-dim T (e.g. reward,
+    # mc_return, success). Stored as frame_features.npz; surfaced as dataset item keys.
+    frame_features: Optional[dict] = None  # {name: (T,) or (T, d) array}
 
     @property
     def num_steps(self) -> int:
