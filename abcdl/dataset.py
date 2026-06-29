@@ -22,7 +22,7 @@ class AbcdlDatasetMeta:
     fps: float
     camera_keys: list
     video_keys: list
-    tasks: list
+    tasks: dict  # {task_index: task_string} (openpi-compatible)
     robot_type: str = "yam_bimanual"
 
 
@@ -49,6 +49,7 @@ class AbcdlDataset(Dataset):
         fmt: str = "abcdl",
         version: str = "latest",
         revision_root: Optional[str] = None,
+        episodes: Optional[list] = None,
     ):
         # If root is not an existing directory but looks like a Hub repo_id
         # (contains a "/" and is not an OS path), auto-download from the Hub.
@@ -71,6 +72,10 @@ class AbcdlDataset(Dataset):
         )
         if not self._dirs:
             raise ValueError(f"no abcdl episodes under {root}")
+
+        # Optional episode subset (e.g. openpi success-only filtering), by index.
+        if episodes is not None:
+            self._dirs = [self._dirs[i] for i in episodes]
 
         # Read per-episode lengths and camera list from metadata JSON.
         self._lengths: list[int] = []
@@ -101,7 +106,11 @@ class AbcdlDataset(Dataset):
         # Probe the first episode for fps and dimensions.
         s_dim, a_dim = self._probe_dims()
 
-        tasks = sorted(set(self._tasks_per_ep))
+        # Tasks as a {task_index: task_string} dict (the LeRobot v2.1 / openpi
+        # `_lerobot_tasks_to_dict`-compatible form, so language/prompt_from_task works).
+        task_strs = sorted(set(self._tasks_per_ep))
+        tasks = {i: t for i, t in enumerate(task_strs)}
+        self._task_to_index = {t: i for i, t in tasks.items()}
         feats: dict = {
             "observation.state": {"dtype": "float32", "shape": (s_dim,), "names": None},
             "action": {"dtype": "float32", "shape": (a_dim,), "names": None},
@@ -180,7 +189,7 @@ class AbcdlDataset(Dataset):
             "fps": self.meta.fps,
             "resolution": resolution,
             "robot_type": self.meta.robot_type,
-            "tasks": list(self.meta.tasks),
+            "tasks": list(self.meta.tasks.values()),
             "state_dim": int(self.meta.features["observation.state"]["shape"][0]),
             "action_dim": int(self.meta.features["action"]["shape"][0]),
             "description": description,
@@ -252,26 +261,24 @@ class AbcdlDataset(Dataset):
 
         out: dict = {
             "observation.state": torch.from_numpy(h.states[frame].astype(np.float32)),
-            "task": h.task,
+            "action": torch.from_numpy(h.actions[frame].astype(np.float32)),
+            "task": h.task,  # language instruction (string)
+            "task_index": torch.tensor(self._task_to_index.get(h.task, 0), dtype=torch.long),
             "timestamp": torch.tensor(frame / self._fps, dtype=torch.float32),
             "episode_index": torch.tensor(ep_idx, dtype=torch.long),
             "frame_index": torch.tensor(frame, dtype=torch.long),
             "index": torch.tensor(idx, dtype=torch.long),
         }
 
-        # Action: single frame or chunked by delta_timestamps offsets.
-        offsets = self.delta_timestamps.get("action")
-        if offsets:
-            # Each offset is a float in seconds; convert to frame row indices,
-            # clamped to valid episode range [0, n-1].
-            rows = [
-                min(max(frame + int(round(o * self._fps)), 0), n - 1)
-                for o in offsets
-            ]
-            # rows is a Python list of ints → fancy indexing → (K, A)
-            out["action"] = torch.from_numpy(h.actions[rows].astype(np.float32))
-        else:
-            out["action"] = torch.from_numpy(h.actions[frame].astype(np.float32))
+        # delta_timestamps: for each key, stack the matching stream over the time
+        # offsets (seconds → frame rows, clamped). Keys are matched flexibly so
+        # openpi's `action_sequence_keys` ("action"/"actions") and state windows
+        # all work; the chunk overwrites that key's single-frame value.
+        for key, offs in self.delta_timestamps.items():
+            rows = [min(max(frame + int(round(o * self._fps)), 0), n - 1) for o in offs]
+            src = h.actions if "action" in key else (h.states if "state" in key else None)
+            if src is not None:
+                out[key] = torch.from_numpy(src[rows].astype(np.float32))
 
         # Camera images: decode ONLY this frame, split per camera, HWC→CHW float [0,1].
         cams = h.frame(frame)

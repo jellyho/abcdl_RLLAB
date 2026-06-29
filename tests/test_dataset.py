@@ -48,6 +48,27 @@ def test_meta_features(tmp_path, tmp_abcdl_episode):
     assert ds.meta.features["observation.state"]["shape"] == (14,)
 
 
+def test_openpi_surface(tmp_path, tmp_abcdl_episode):
+    """openpi compatibility: tasks dict, task_index, episode subset, flexible
+    delta_timestamps keyed on the action_sequence_key (e.g. 'actions')."""
+    root = _make_root(tmp_path, tmp_abcdl_episode)
+
+    ds = AbcdlDataset(root)
+    # tasks is a {task_index: task_string} dict (openpi _lerobot_tasks_to_dict form)
+    assert isinstance(ds.meta.tasks, dict)
+    assert set(ds.meta.tasks.values()) == {"demo task"}
+    item = ds[0]
+    assert int(item["task_index"]) == 0 and item["task"] == "demo task"
+
+    # episode subset (like LeRobotDataset(episodes=...))
+    one = AbcdlDataset(root, episodes=[0])
+    assert one.num_episodes == 1 and len(one) == 6
+
+    # openpi requests delta on action_sequence_keys (default "actions")
+    ds2 = AbcdlDataset(root, delta_timestamps={"actions": [0.0, 1 / 30, 2 / 30]})
+    assert ds2[0]["actions"].shape == (3, 14)
+
+
 def test_dataloader_multiworker_fork_safe(tmp_path, tmp_abcdl_episode):
     """torchcodec decoders are not fork-safe; the dataset must reset its decoder
     cache per worker process so a num_workers>0 DataLoader does not crash."""
