@@ -38,6 +38,43 @@ def test_pull_latest_uses_branch_and_version_uses_scoped_tag(monkeypatch, tmp_pa
     assert out == str(tmp_path)
 
 
+def test_push_with_card_uploads_readme_to_main(monkeypatch, tmp_path):
+    calls = {}
+    Ref = types.SimpleNamespace
+    refs = types.SimpleNamespace(
+        branches=[Ref(name="main"), Ref(name="abcdl_224"), Ref(name="mcap")], tags=[])
+    monkeypatch.setattr(hf, "_hub", lambda: types.SimpleNamespace(
+        create_repo=lambda **k: None, create_branch=lambda **k: None,
+        upload_folder=lambda **k: None, create_tag=lambda **k: None,
+        list_repo_refs=lambda *a, **k: refs,
+        upload_file=lambda **k: calls.setdefault("upload_file", k),
+    ))
+    (tmp_path / "f.txt").write_text("x")
+    card = {"num_episodes": 20, "num_frames": 71877,
+            "camera_keys": ["top_left", "left_wrist"], "fps": 30.0,
+            "resolution": (224, 224), "robot_type": "yam_bimanual",
+            "tasks": ["arrange the flowers into the vase"], "state_dim": 14, "action_dim": 14}
+    hf.push("jellyho/abcdl_demo", str(tmp_path), fmt="abcdl_224", version="v1", card=card)
+    uf = calls["upload_file"]
+    assert uf["path_in_repo"] == "README.md" and uf["revision"] == "main"
+    readme = uf["path_or_fileobj"].decode("utf-8")
+    assert readme.startswith("---")                 # HF YAML frontmatter
+    assert "71877" in readme and "224x224" in readme
+    assert "AbcdlDataset" in readme and "arrange the flowers" in readme
+    assert "`mcap`" in readme and "`abcdl_224`" in readme  # lists available branches
+
+
+def test_push_without_card_skips_readme(monkeypatch, tmp_path):
+    calls = {}
+    monkeypatch.setattr(hf, "_hub", lambda: types.SimpleNamespace(
+        create_repo=lambda **k: None, create_branch=lambda **k: None,
+        upload_folder=lambda **k: None, create_tag=lambda **k: None,
+        upload_file=lambda **k: calls.setdefault("upload_file", k)))
+    (tmp_path / "f.txt").write_text("x")
+    hf.push("jellyho/x", str(tmp_path), fmt="abcdl_224", version="v1")
+    assert "upload_file" not in calls
+
+
 def test_list_versions_filters_and_strips_format(monkeypatch):
     Ref = types.SimpleNamespace
     refs = types.SimpleNamespace(

@@ -144,8 +144,17 @@ class AbcdlDataset(Dataset):
         fmt: str = "abcdl",
         message: Optional[str] = None,
         token: Optional[str] = None,
+        update_card: bool = True,
+        description: Optional[str] = None,
     ) -> str:
-        """Upload ``self.root`` to the Hub as *repo_id*, tagged *version*."""
+        """Upload ``self.root`` to the Hub as *repo_id*, tagged *version*.
+
+        When *update_card* is true (default), a dataset card (``README.md``) is
+        auto-generated from this dataset's metadata and uploaded to ``main`` — no
+        manual post-processing, mirroring ``LeRobotDataset.push_to_hub``. Pass
+        *description* to override the dataset blurb.
+        """
+        card = self._card_metadata(description) if update_card else None
         return hf.push(
             repo_id=repo_id,
             local_dir=self.root,
@@ -153,7 +162,29 @@ class AbcdlDataset(Dataset):
             version=version,
             message=message,
             token=token,
+            card=card,
         )
+
+    def _card_metadata(self, description: Optional[str] = None) -> dict:
+        """Collect dataset stats for the auto-generated dataset card."""
+        resolution = None
+        with open(os.path.join(self._dirs[0], "episode_metadata.json")) as f:
+            m = json.load(f)
+        cr = m.get("camera_resolutions", {})
+        if self.camera_keys and self.camera_keys[0] in cr:
+            resolution = tuple(cr[self.camera_keys[0]])  # (width, height)
+        return {
+            "num_episodes": self.num_episodes,
+            "num_frames": self.num_frames,
+            "camera_keys": list(self.meta.camera_keys),
+            "fps": self.meta.fps,
+            "resolution": resolution,
+            "robot_type": self.meta.robot_type,
+            "tasks": list(self.meta.tasks),
+            "state_dim": int(self.meta.features["observation.state"]["shape"][0]),
+            "action_dim": int(self.meta.features["action"]["shape"][0]),
+            "description": description,
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers
